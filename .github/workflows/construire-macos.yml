@@ -88,32 +88,32 @@ jobs:
       # release sort non signee EN LE DISANT, ce qui est l'etat d'aujourd'hui et
       # doit continuer de marcher.
       ECHO_UPDATE_SIGNING_KEY: ${{ secrets.ECHO_UPDATE_SIGNING_KEY }}
-      # ═══ LA SIGNATURE, ET POURQUOI ELLE MANQUAIT ═══
+      # ═══ LA SIGNATURE macOS, ET LES DEUX PIEGES QU'ELLE CACHE ═══
       #
-      # La recette d'origine posait CSC_IDENTITY_AUTO_DISCOVERY a "false", ce
-      # qui dit litteralement a electron-builder de ne chercher AUCUNE identite
-      # de signature. Il obeit, saute la signature, saute donc la notarisation
-      # qui en depend, et REUSSIT quand meme. Verifie le 2026-08-30 sur le
-      # paquet livre: aucun dossier Contents/_CodeSignature, pas meme une
-      # signature ad-hoc. macOS affiche alors un avertissement qu'il faut
-      # contourner a la main dans les Reglages.
+      # Cette app n'a jamais ete signee. La recette de la forge posait
+      # CSC_IDENTITY_AUTO_DISCOVERY a "false", ce qui dit litteralement a
+      # electron-builder de ne chercher aucune identite: il obeit, saute la
+      # signature, saute donc la notarisation qui en depend, et REUSSIT quand
+      # meme. Verifie le 2026-08-30 sur le paquet livre: aucun dossier
+      # Contents/_CodeSignature, pas meme une signature ad-hoc.
       #
-      # La variable n'est donc plus posee en dur ici. Quand les secrets Apple
-      # sont presents, electron-builder decouvre l'identite et signe; quand ils
-      # manquent, l'etape « Signature disponible » plus bas la repose a "false"
-      # et LE DIT, plutot que de laisser croire a une app signee.
+      # PREMIER PIEGE, CSC_LINK. Le passer laisse electron-builder monter son
+      # propre trousseau, et il y autorise `apple-tool:` et `apple:` a se
+      # servir de la cle privee -- mais pas `codesign:`, qui est pourtant le
+      # seul programme qui va la demander. macOS ouvre alors une demande
+      # d'autorisation que personne ne voit sur un runner, et codesign attend
+      # indefiniment: une heure et demie sur la seule ligne « signing », le
+      # 2026-08-30. L'etape « Trousseau de signature » monte donc le trousseau
+      # elle-meme, avec la bonne liste, et designe l'identite par CSC_NAME.
       #
-      # Les 99 euros du programme developpeur donnent le DROIT d'emettre ces
-      # elements; ils ne les posent sur aucune machine de build.
-      # CSC_LINK accepte le .p12 en base64 directement, c'est documente.
-      CSC_LINK: ${{ secrets.APPLE_CERT_P12 }}
-      CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-      # APPLE_API_KEY ATTEND UN CHEMIN DE FICHIER, PAS LA CLE. C'est le piege
-      # de cette variable: y mettre le contenu du .p8 donne un chemin qui
-      # n'existe pas, notarytool ne trouve pas de cle, et la notarisation est
-      # sautee sans que le build echoue. On garde donc le .p8 en base64 dans
-      # APPLE_API_KEY_P8, et l'etape « Signature disponible » l'ecrit sur le
-      # disque avant de pointer APPLE_API_KEY dessus.
+      # SECOND PIEGE, APPLE_API_KEY attend un CHEMIN et pas la cle. Y mettre le
+      # contenu du .p8 donne un fichier inexistant, notarytool ne trouve rien,
+      # et la notarisation est sautee sans faire echouer le build. Le .p8 vit
+      # donc dans APPLE_API_KEY_P8, et la meme etape l'ecrit sur le disque
+      # avant de pointer APPLE_API_KEY dessus.
+      #
+      # Les 99 euros du programme developpeur donnent le DROIT d'emettre le
+      # certificat et la cle; ils ne les posent sur aucune machine de build.
       APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -207,40 +207,95 @@ jobs:
       - name: Dependances
         run: npx yarn install --frozen-lockfile
 
-      - name: Signature disponible
-        # ON NE FAIT PAS SEMBLANT DE SIGNER. Sans certificat, electron-builder
-        # chercherait une identite, n'en trouverait pas, et se comporterait de
-        # facon variable selon sa version. On lui dit alors explicitement de ne
-        # pas chercher, et on l'ecrit dans le journal: une app non signee reste
-        # utilisable, mais celui qui l'installe devra passer par les Reglages,
-        # et il vaut mieux le savoir en lisant le build qu'en le decouvrant.
+      - name: Trousseau de signature
+        # ═══ POURQUOI ON MONTE LE TROUSSEAU A LA MAIN ═══
+        #
+        # Laisse a lui-meme, electron-builder importe le certificat et autorise
+        # `apple-tool:` et `apple:` a se servir de la cle. Il oublie
+        # `codesign:`, qui est pourtant le seul programme qui va la demander.
+        # macOS ouvre alors une boite de dialogue que personne ne voit sur un
+        # runner, et codesign attend indefiniment: une heure et demie sans un
+        # octet de progres, le 2026-08-30.
+        #
+        # Trois details comptent autant que la liste elle-meme:
+        #   - `-lut 21600` retire l'auto-verrouillage, sinon le trousseau se
+        #     referme au milieu d'un build long et les signatures suivantes
+        #     rouvrent une demande d'autorisation;
+        #   - le trousseau doit etre dans la LISTE DE RECHERCHE, sans quoi
+        #     codesign ne le regarde pas, meme en le nommant;
+        #   - le mot de passe est tire au hasard ici et ne sort jamais: il ne
+        #     protege qu'un fichier qui vit le temps du job.
         env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
           set -eu
-          if [ -n "${CSC_LINK:-}" ] && [ -n "${APPLE_API_KEY_P8:-}" ]; then
-            # Le .p8 sur le disque, hors du depot clone, et APPLE_API_KEY
-            # pointe dessus. `set +x` est implicite ici: rien n'echo la cle.
-            mkdir -p "$RUNNER_TEMP/notarisation"
-            cle="$RUNNER_TEMP/notarisation/AuthKey_${APPLE_API_KEY_ID}.p8"
-            printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$cle"
-            chmod 600 "$cle"
-            # Verifie que c'est bien une cle lisible, sans en montrer le contenu.
-            head -1 "$cle" | grep -q "BEGIN PRIVATE KEY" \
-              || { echo "le .p8 decode n'est pas une cle privee : base64 invalide ?"; exit 1; }
-            echo "APPLE_API_KEY=$cle" >> "$GITHUB_ENV"
-            echo "certificat et cle App Store Connect presents : signature et"
-            echo "notarisation demandees a electron-builder."
-          else
+
+          if [ -z "${APPLE_CERT_P12:-}" ] || [ -z "${APPLE_API_KEY_P8:-}" ]; then
             manque=""
-            [ -n "${CSC_LINK:-}" ] || manque="$manque APPLE_CERT_P12"
+            [ -n "${APPLE_CERT_P12:-}" ] || manque="$manque APPLE_CERT_P12"
             [ -n "${APPLE_API_KEY_P8:-}" ] || manque="$manque APPLE_API_KEY_P8"
             echo "SECRETS DE SIGNATURE ABSENTS :$manque"
             echo "L'app sortira NON SIGNEE. Elle s'installe et se lance, mais"
             echo "macOS avertira a la premiere ouverture et il faudra passer"
             echo "par Reglages > Confidentialite et securite pour l'autoriser."
             echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
+            exit 0
           fi
+
+          secret="$RUNNER_TEMP/signature"
+          mkdir -p "$secret"
+          chmod 700 "$secret"
+
+          # ---- Le certificat, dans un trousseau a nous -----------------------
+          p12="$secret/cert.p12"
+          printf '%s' "$APPLE_CERT_P12" | base64 --decode > "$p12"
+          trousseau="$secret/echo-signature.keychain-db"
+          motdepasse=$(openssl rand -base64 24)
+
+          security create-keychain -p "$motdepasse" "$trousseau"
+          security set-keychain-settings -lut 21600 "$trousseau"
+          security unlock-keychain -p "$motdepasse" "$trousseau"
+
+          security import "$p12" -k "$trousseau" -P "$APPLE_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productbuild
+
+          # LA LIGNE QUI DEBLOQUE TOUT: `codesign:` en plus des deux autres.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$motdepasse" "$trousseau" >/dev/null
+
+          # Dans la liste de recherche, en gardant celles qui y etaient.
+          anciennes=$(security list-keychains -d user | tr -d '"' | tr -s ' ' ' ')
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s "$trousseau" $anciennes
+
+          rm -f "$p12"
+
+          # ---- L'identite, designee par son nom ------------------------------
+          identite=$(security find-identity -v -p codesigning "$trousseau" \
+            | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)
+          if [ -z "$identite" ]; then
+            echo "aucune identite Developer ID trouvee dans le trousseau."
+            echo "le .p12 est-il bien un certificat Developer ID Application ?"
+            exit 1
+          fi
+          echo "identite : $identite"
+          echo "CSC_NAME=$identite" >> "$GITHUB_ENV"
+          echo "CSC_KEYCHAIN=$trousseau" >> "$GITHUB_ENV"
+
+          # ---- La cle de notarisation ----------------------------------------
+          # APPLE_API_KEY attend un CHEMIN, pas la cle: y mettre le contenu du
+          # .p8 donne un fichier inexistant, notarytool ne trouve rien, et la
+          # notarisation est sautee sans que le build echoue.
+          cle="$secret/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$cle"
+          chmod 600 "$cle"
+          head -1 "$cle" | grep -q "BEGIN PRIVATE KEY" \
+            || { echo "le .p8 decode n'est pas une cle privee : base64 invalide ?"; exit 1; }
+          echo "APPLE_API_KEY=$cle" >> "$GITHUB_ENV"
+
+          echo "trousseau pret, signature et notarisation demandees."
 
       - name: Build macOS
         # DEBUG=electron-builder affiche chaque appel a codesign, un par un.

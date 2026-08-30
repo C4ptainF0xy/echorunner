@@ -58,6 +58,19 @@ jobs:
       # exporte dans SON shell, ce que la reservation n'empeche pas.
       FORGE_URL: https://workspace.prismodev.com
       FORGE_REPO: C4ptainF0xy/echo-launcher
+
+      # ═══ LE TAS DE NODE, SANS QUOI LE RENDERER NE S'ASSEMBLE PAS ═══
+      #
+      # `electron-vite build` est mort en « JavaScript heap out of memory » a
+      # 2030 Mo, le plafond par defaut. Le renderer pese 13,8 Mo de bundle et
+      # 21 Mo de sourcemap, et Rollup garde tout en memoire pendant le rendu des
+      # chunks. Le runner a 7 Go: 4 Go de tas doublent le plafond en laissant de
+      # la place au reste.
+      #
+      # La machine de la forge ne rencontrait pas ce mur parce qu'elle a 16 Go
+      # et un Node configure autrement; ce n'est donc pas un defaut du projet,
+      # c'est une difference d'environnement qu'il faut declarer ici.
+      NODE_OPTIONS: --max-old-space-size=4096
       TOKEN: ${{ secrets.FORGEJO_TOKEN }}
       INPUT_TAG: ${{ inputs.tag }}
       # La cle Ed25519 qui signe le manifeste de mise a jour. Absente, la

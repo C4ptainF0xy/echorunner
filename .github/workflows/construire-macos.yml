@@ -1,0 +1,235 @@
+name: Construire Echo pour macOS Apple Silicon
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# POURQUOI CE DEPOT EXISTE.
+#
+# Le launcher se construit sur une forge privee (workspace.prismodev.com), dont
+# le runner macOS est une VM QEMU emulant un CPU Intel Penryn. electron-builder
+# prend l'architecture de l'hote, donc ce runner ne peut produire QUE du x86_64.
+# Verifie le 2026-08-30 sur le paquet livre: `Mach-O 64-bit x86_64`, une seule
+# tranche. Sur un Mac Apple Silicon, tout Echo tourne alors sous Rosetta, JIT de
+# V8 compris: rien ne casse, tout rame, a chaque action.
+#
+# Ce depot-ci n'existe que pour emprunter une machine ARM64 a GitHub, qui en
+# offre. Il ne contient PAS le code du launcher, et ne doit jamais le contenir:
+# il le clone depuis la forge au moment du build, et la source ne vit que sur le
+# runner ephemere. Un depot GitHub public rendrait la source et tout
+# l'historique clonables par n'importe qui, ce que le projet refuse.
+#
+# CE DEPOT DOIT DONC RESTER PRIVE. Sur un depot prive, GitHub facture les
+# minutes macOS au decuple: les 2000 minutes offertes valent environ 200 minutes
+# macOS reelles, soit une poignee de builds par mois. C'est assez pour des
+# releases, pas pour de l'integration continue.
+#
+# CE QUI A RENDU CECI POSSIBLE. `python_rpc` est fige par cx_Freeze, qui ne sait
+# pas compiler pour une autre architecture que la sienne. On croyait donc devoir
+# renoncer a l'ARM64 ou acheter un Mac. Mais rien n'a besoin d'etre croise:
+# `libtorrent` publie des roues macOS arm64 (2.1.1, CPython 3.9 a 3.13), donc
+# sur un hote arm64 tout se construit nativement, sans un seul artifice.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Le tag a construire, avec le v (ex: v0.7.46)"
+        required: true
+        type: string
+
+jobs:
+  macos:
+    # macos-15, pas macos-26: les roues arm64 de libtorrent ciblent macOS 14 et
+    # 15, et une roue ne s'installe jamais sur un systeme plus ANCIEN que sa
+    # cible. Prendre l'image la plus recente ferait dependre le build de roues
+    # qui n'existent pas encore, pour aucun gain.
+    runs-on: macos-15
+
+    env:
+      # La forge privee. `attach-assets.sh`, dans le depot du launcher, lit ces
+      # deux variables: elles doivent designer la FORGE, pas GitHub, sans quoi
+      # les fichiers seraient televerses vers ce depot-ci.
+      GITHUB_SERVER_URL: https://workspace.prismodev.com
+      GITHUB_REPOSITORY: C4ptainF0xy/echo-launcher
+      TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+      INPUT_TAG: ${{ inputs.tag }}
+      # La cle Ed25519 qui signe le manifeste de mise a jour. Absente, la
+      # release sort non signee EN LE DISANT, ce qui est l'etat d'aujourd'hui et
+      # doit continuer de marcher.
+      ECHO_UPDATE_SIGNING_KEY: ${{ secrets.ECHO_UPDATE_SIGNING_KEY }}
+      # ═══ LA SIGNATURE, ET POURQUOI ELLE MANQUAIT ═══
+      #
+      # La recette d'origine posait CSC_IDENTITY_AUTO_DISCOVERY a "false", ce
+      # qui dit litteralement a electron-builder de ne chercher AUCUNE identite
+      # de signature. Il obeit, saute la signature, saute donc la notarisation
+      # qui en depend, et REUSSIT quand meme. Verifie le 2026-08-30 sur le
+      # paquet livre: aucun dossier Contents/_CodeSignature, pas meme une
+      # signature ad-hoc. macOS affiche alors un avertissement qu'il faut
+      # contourner a la main dans les Reglages.
+      #
+      # La variable n'est donc plus posee en dur ici. Quand les secrets Apple
+      # sont presents, electron-builder decouvre l'identite et signe; quand ils
+      # manquent, l'etape « Signature disponible » plus bas la repose a "false"
+      # et LE DIT, plutot que de laisser croire a une app signee.
+      #
+      # Les 99 euros du programme developpeur donnent le DROIT d'emettre ces
+      # elements; ils ne les posent sur aucune machine de build.
+      CSC_LINK: ${{ secrets.APPLE_CERT_P12 }}
+      CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+    steps:
+      - name: La machine est-elle bien ARM64
+        # LA GARDE QUI JUSTIFIE TOUT LE RESTE. Si ce runner n'est pas arm64, le
+        # build produira du x64 sans rien dire, on publiera un paquet identique
+        # a celui d'aujourd'hui, et on croira le probleme regle. Mieux vaut
+        # s'arreter ici.
+        run: |
+          set -eu
+          arch=$(uname -m)
+          echo "architecture du runner : $arch"
+          sysctl -n machdep.cpu.brand_string || true
+          if [ "$arch" != "arm64" ]; then
+            echo "Ce runner n'est pas Apple Silicon. Tout l'interet de ce"
+            echo "workflow est de construire NATIVEMENT en arm64 : on s'arrete"
+            echo "plutot que de republier un paquet Intel."
+            exit 1
+          fi
+
+      - name: Cloner le launcher depuis la forge
+        # Pas actions/checkout: le code n'est pas sur GitHub et ne doit pas y
+        # etre. Il est clone ici, sur une machine jetable, et disparait avec
+        # elle. --depth 1 sur le tag: on construit une version precise, pas une
+        # branche.
+        run: |
+          set -eu
+          case "$INPUT_TAG" in
+            v[0-9]*) : ;;
+            *) echo "tag inattendu : '$INPUT_TAG'"; exit 1 ;;
+          esac
+          git clone --depth 1 --branch "$INPUT_TAG" \
+            "https://token:${TOKEN}@workspace.prismodev.com/${GITHUB_REPOSITORY}.git" .
+          git log -1 --format="commit construit : %H %s"
+
+      - name: Outils presents
+        run: |
+          set -eu
+          missing=""
+          for tool in node python3 cargo git; do
+            command -v "$tool" >/dev/null || missing="$missing $tool"
+          done
+          if [ -n "$missing" ]; then
+            echo "Outils manquants sur ce runner :$missing"
+            exit 1
+          fi
+          node -v && python3 --version && cargo --version
+          # La chaine Rust doit savoir viser cette machine. Sur un runner arm64
+          # c'est deja le cas, mais le dire ici evite un echec obscur plus tard.
+          rustc -vV | sed -n 's/^host: /cible Rust : /p'
+
+      - name: Dependances Python
+        # Le venv est celui de la recette d'origine. Sur arm64, pip prend les
+        # roues macosx_*_arm64 de libtorrent: rien n'est compile, rien n'est
+        # croise, et cx_Freeze figera donc du natif.
+        run: |
+          set -eu
+          python3 -m venv .venv
+          ./.venv/bin/pip install --quiet --upgrade pip
+          ./.venv/bin/pip install --quiet -r requirements.txt
+          ./.venv/bin/python -c "import cx_Freeze, libtorrent; print('cx_Freeze et libtorrent sont la')"
+          # Ce qui compte vraiment: que le module charge soit bien arm64.
+          ./.venv/bin/python - <<'PY'
+          import libtorrent, subprocess, sys
+          chemin = libtorrent.__file__
+          print("libtorrent :", chemin)
+          subprocess.run(["file", "-b", chemin], check=False)
+          PY
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Dependances
+        run: npx yarn install --frozen-lockfile
+
+      - name: Signature disponible
+        # ON NE FAIT PAS SEMBLANT DE SIGNER. Sans certificat, electron-builder
+        # chercherait une identite, n'en trouverait pas, et se comporterait de
+        # facon variable selon sa version. On lui dit alors explicitement de ne
+        # pas chercher, et on l'ecrit dans le journal: une app non signee reste
+        # utilisable, mais celui qui l'installe devra passer par les Reglages,
+        # et il vaut mieux le savoir en lisant le build qu'en le decouvrant.
+        run: |
+          set -eu
+          if [ -n "${CSC_LINK:-}" ] && [ -n "${APPLE_API_KEY:-}" ]; then
+            echo "certificat et cle App Store Connect presents : signature et"
+            echo "notarisation demandees a electron-builder."
+          else
+            manque=""
+            [ -n "${CSC_LINK:-}" ] || manque="$manque APPLE_CERT_P12"
+            [ -n "${APPLE_API_KEY:-}" ] || manque="$manque APPLE_API_KEY"
+            echo "SECRETS DE SIGNATURE ABSENTS :$manque"
+            echo "L'app sortira NON SIGNEE. Elle s'installe et se lance, mais"
+            echo "macOS avertira a la premiere ouverture et il faudra passer"
+            echo "par Reglages > Confidentialite et securite pour l'autoriser."
+            echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build macOS
+        run: npx yarn build:mac --publish never
+
+      - name: Ce que la signature donne
+        # Verifie ce qui EST, pas ce qui etait demande. Une signature annoncee
+        # et absente est exactement le defaut qu'on repare ici.
+        run: |
+          set -eu
+          app=$(find dist -maxdepth 2 -name "*.app" -type d | head -1)
+          if [ -d "$app/Contents/_CodeSignature" ]; then
+            codesign -dv --verbose=2 "$app" 2>&1 | head -8 || true
+            spctl -a -vv "$app" 2>&1 | head -4 || true
+          else
+            echo "app NON SIGNEE (aucun Contents/_CodeSignature)"
+          fi
+
+      - name: Le paquet est-il vraiment ARM64
+        # LA SECONDE GARDE, ET LA PLUS IMPORTANTE. Un build qui retombe en x64
+        # sans le dire est exactement le defaut qu'on repare: il produit un
+        # paquet qui s'installe, qui se lance, et qui rame. Un `file` sur le
+        # binaire principal tranche en une ligne.
+        run: |
+          set -eu
+          [ -d dist ] || { echo "PAS DE DOSSIER dist"; exit 1; }
+          ls -lh dist | head -20 || true
+
+          app=$(find dist -maxdepth 2 -name "*.app" -type d | head -1)
+          [ -n "$app" ] || { echo "aucune .app produite"; exit 1; }
+          bin="$app/Contents/MacOS/$(basename "${app%.app}")"
+          [ -f "$bin" ] || bin=$(find "$app/Contents/MacOS" -type f -perm +111 | head -1)
+
+          echo "binaire principal : $bin"
+          file -b "$bin"
+          if ! file -b "$bin" | grep -qE "arm64"; then
+            echo "LE BINAIRE N'EST PAS ARM64. C'est precisement le defaut que ce"
+            echo "workflow existe pour corriger : on ne publie pas."
+            exit 1
+          fi
+          echo "paquet ARM64 confirme"
+
+      - name: Signer le manifeste macOS
+        run: |
+          set -eu
+          if [ -n "${ECHO_UPDATE_SIGNING_KEY:-}" ]; then
+            node scripts/signer-manifeste.mjs dist/latest-mac.yml
+            [ -f dist/latest-mac.yml.sig ] \
+              || { echo "signature annoncee mais absente"; exit 1; }
+          else
+            echo "PAS DE CLE DE PUBLICATION : latest-mac.yml sort NON SIGNE."
+          fi
+
+      - name: Attacher a la release de la forge
+        # Le script vient du depot du launcher, qu'on vient de cloner: une seule
+        # facon d'attacher des assets, partagee par les trois plateformes.
+        run: |
+          set -eu
+          exacts="latest-mac.yml"
+          [ -f dist/latest-mac.yml.sig ] && exacts="$exacts latest-mac.yml.sig"
+          sh .forgejo/scripts/attach-assets.sh "dmg zip" "$exacts"

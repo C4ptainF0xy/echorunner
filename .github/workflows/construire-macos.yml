@@ -44,6 +44,17 @@ jobs:
     # qui n'existent pas encore, pour aucun gain.
     runs-on: macos-15
 
+    # ═══ UNE LIMITE, PARCE QUE LES MINUTES macOS COUTENT DIX FOIS ═══
+    #
+    # Sur un depot prive, GitHub facture une minute macOS comme dix. Un job
+    # bloque va jusqu'a la limite par defaut de six heures, soit 3600 minutes
+    # facturees sur les 2000 offertes du mois: un seul incident consomme plus
+    # que le quota entier. Constate le 2026-08-30, une signature restee 81
+    # minutes sans avancer, donc 810 minutes decomptees.
+    #
+    # 45 minutes couvrent largement un build complet, notarisation comprise.
+    timeout-minutes: 45
+
     env:
       # ═══ POURQUOI CES NOMS-LA, ET PAS GITHUB_SERVER_URL ═══
       #
@@ -232,6 +243,17 @@ jobs:
           fi
 
       - name: Build macOS
+        # DEBUG=electron-builder affiche chaque appel a codesign, un par un.
+        # Sans ca, le journal s'arrete sur une seule ligne « signing » et une
+        # attente d'une heure ressemble a un travail en cours: impossible de
+        # savoir si ca signe lentement ou si ca ne signe pas du tout.
+        #
+        # CSC_FOR_PULL_REQUEST n'a rien a voir ici; ce qui compte est que le
+        # trousseau temporaire cree par electron-builder autorise codesign a se
+        # servir de la cle sans demander. Une signature qui « dure » est presque
+        # toujours une boite de dialogue que personne ne voit.
+        env:
+          DEBUG: electron-builder
         run: npx yarn build:mac --publish never
 
       - name: Ce que la signature donne

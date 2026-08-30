@@ -145,6 +145,22 @@ jobs:
           # c'est deja le cas, mais le dire ici evite un echec obscur plus tard.
           rustc -vV | sed -n 's/^host: /cible Rust : /p'
 
+      - name: Python 3.12
+        # ═══ LA VERSION EST EPINGLEE, ET CE N'EST PAS DE LA PRUDENCE ═══
+        #
+        # `libtorrent` ne publie de roues que jusqu'a cp313. Le runner GitHub
+        # arrive avec Python 3.14, pour lequel il n'en existe aucune: pip
+        # repond « No matching distribution found for libtorrent » et le build
+        # s'arrete. Constate le 2026-08-30 au premier essai.
+        #
+        # 3.12 plutot que 3.13: c'est la version que couvrent a la fois les
+        # roues arm64 de libtorrent et cx_Freeze 7.2.3, et suivre la derniere
+        # version disponible ferait recasser ce build le jour ou GitHub avance
+        # son image, pour aucun gain.
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Dependances Python
         # Le venv est celui de la recette d'origine. Sur arm64, pip prend les
         # roues macosx_*_arm64 de libtorrent: rien n'est compile, rien n'est

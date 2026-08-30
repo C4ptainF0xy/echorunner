@@ -273,11 +273,17 @@ jobs:
           rm -f "$p12"
 
           # ---- L'identite, designee par son nom ------------------------------
+          # SANS LE PREFIXE. electron-builder refuse « Developer ID
+          # Application: Sasha ... » avec « Please remove prefix ... —
+          # appropriate certificate will be chosen automatically »: il veut le
+          # nom commun seul, et choisit le type de certificat lui-meme d'apres
+          # la cible. On ne capture donc que ce qui suit les deux points.
           identite=$(security find-identity -v -p codesigning "$trousseau" \
-            | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)
+            | sed -n 's/.*"Developer ID Application: \(.*\)"/\1/p' | head -1)
           if [ -z "$identite" ]; then
             echo "aucune identite Developer ID trouvee dans le trousseau."
             echo "le .p12 est-il bien un certificat Developer ID Application ?"
+            security find-identity -v "$trousseau" || true
             exit 1
           fi
           echo "identite : $identite"

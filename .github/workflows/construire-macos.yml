@@ -45,11 +45,19 @@ jobs:
     runs-on: macos-15
 
     env:
-      # La forge privee. `attach-assets.sh`, dans le depot du launcher, lit ces
-      # deux variables: elles doivent designer la FORGE, pas GitHub, sans quoi
-      # les fichiers seraient televerses vers ce depot-ci.
-      GITHUB_SERVER_URL: https://workspace.prismodev.com
-      GITHUB_REPOSITORY: C4ptainF0xy/echo-launcher
+      # ═══ POURQUOI CES NOMS-LA, ET PAS GITHUB_SERVER_URL ═══
+      #
+      # `attach-assets.sh` lit GITHUB_SERVER_URL et GITHUB_REPOSITORY, et sur un
+      # runner GitHub ces deux-la designent GitHub, donc ce depot-ci. On ne peut
+      # PAS les corriger dans un bloc `env:`: GitHub reserve tout le prefixe
+      # GITHUB_ et ignore silencieusement une redefinition. Essaye le
+      # 2026-08-30: le clone est parti chercher `echorunner` sur la forge, qui
+      # evidemment n'y est pas.
+      #
+      # On garde donc nos propres noms, et l'etape qui appelle le script les
+      # exporte dans SON shell, ce que la reservation n'empeche pas.
+      FORGE_URL: https://workspace.prismodev.com
+      FORGE_REPO: C4ptainF0xy/echo-launcher
       TOKEN: ${{ secrets.FORGEJO_TOKEN }}
       INPUT_TAG: ${{ inputs.tag }}
       # La cle Ed25519 qui signe le manifeste de mise a jour. Absente, la
@@ -115,8 +123,10 @@ jobs:
             v[0-9]*) : ;;
             *) echo "tag inattendu : '$INPUT_TAG'"; exit 1 ;;
           esac
+          hote=${FORGE_URL#https://}
+          echo "clone de $FORGE_REPO sur $hote, tag $INPUT_TAG"
           git clone --depth 1 --branch "$INPUT_TAG" \
-            "https://token:${TOKEN}@workspace.prismodev.com/${GITHUB_REPOSITORY}.git" .
+            "https://token:${TOKEN}@${hote}/${FORGE_REPO}.git" .
           git log -1 --format="commit construit : %H %s"
 
       - name: Outils presents
@@ -248,6 +258,13 @@ jobs:
         # facon d'attacher des assets, partagee par les trois plateformes.
         run: |
           set -eu
+          # Exportees ICI, dans le shell de l'etape: le bloc `env:` d'un job ne
+          # peut pas redefinir une variable en GITHUB_, la reservation ne
+          # s'applique pas a un export shell. Sans ces deux lignes, le script
+          # televerserait vers ce depot GitHub au lieu de la forge.
+          export GITHUB_SERVER_URL="$FORGE_URL"
+          export GITHUB_REPOSITORY="$FORGE_REPO"
+
           exacts="latest-mac.yml"
           [ -f dist/latest-mac.yml.sig ] && exacts="$exacts latest-mac.yml.sig"
           sh .forgejo/scripts/attach-assets.sh "dmg zip" "$exacts"

@@ -73,9 +73,15 @@ jobs:
       #
       # Les 99 euros du programme developpeur donnent le DROIT d'emettre ces
       # elements; ils ne les posent sur aucune machine de build.
+      # CSC_LINK accepte le .p12 en base64 directement, c'est documente.
       CSC_LINK: ${{ secrets.APPLE_CERT_P12 }}
       CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      # APPLE_API_KEY ATTEND UN CHEMIN DE FICHIER, PAS LA CLE. C'est le piege
+      # de cette variable: y mettre le contenu du .p8 donne un chemin qui
+      # n'existe pas, notarytool ne trouve pas de cle, et la notarisation est
+      # sautee sans que le build echoue. On garde donc le .p8 en base64 dans
+      # APPLE_API_KEY_P8, et l'etape « Signature disponible » l'ecrit sur le
+      # disque avant de pointer APPLE_API_KEY dessus.
       APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -158,15 +164,27 @@ jobs:
         # pas chercher, et on l'ecrit dans le journal: une app non signee reste
         # utilisable, mais celui qui l'installe devra passer par les Reglages,
         # et il vaut mieux le savoir en lisant le build qu'en le decouvrant.
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
           set -eu
-          if [ -n "${CSC_LINK:-}" ] && [ -n "${APPLE_API_KEY:-}" ]; then
+          if [ -n "${CSC_LINK:-}" ] && [ -n "${APPLE_API_KEY_P8:-}" ]; then
+            # Le .p8 sur le disque, hors du depot clone, et APPLE_API_KEY
+            # pointe dessus. `set +x` est implicite ici: rien n'echo la cle.
+            mkdir -p "$RUNNER_TEMP/notarisation"
+            cle="$RUNNER_TEMP/notarisation/AuthKey_${APPLE_API_KEY_ID}.p8"
+            printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$cle"
+            chmod 600 "$cle"
+            # Verifie que c'est bien une cle lisible, sans en montrer le contenu.
+            head -1 "$cle" | grep -q "BEGIN PRIVATE KEY" \
+              || { echo "le .p8 decode n'est pas une cle privee : base64 invalide ?"; exit 1; }
+            echo "APPLE_API_KEY=$cle" >> "$GITHUB_ENV"
             echo "certificat et cle App Store Connect presents : signature et"
             echo "notarisation demandees a electron-builder."
           else
             manque=""
             [ -n "${CSC_LINK:-}" ] || manque="$manque APPLE_CERT_P12"
-            [ -n "${APPLE_API_KEY:-}" ] || manque="$manque APPLE_API_KEY"
+            [ -n "${APPLE_API_KEY_P8:-}" ] || manque="$manque APPLE_API_KEY_P8"
             echo "SECRETS DE SIGNATURE ABSENTS :$manque"
             echo "L'app sortira NON SIGNEE. Elle s'installe et se lance, mais"
             echo "macOS avertira a la premiere ouverture et il faudra passer"

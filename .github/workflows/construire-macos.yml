@@ -48,7 +48,7 @@ jobs:
     #
     # Le veilleur de l'etape de build a tranche le 2026-08-31: la signature
     # prend une poignee de minutes et se termine (neuf signatures posees), et
-    # ce qui dure, c'est  -- la file d'attente d'Apple, sur
+    # ce qui dure, c'est "notarytool submit" -- la file d'attente d'Apple, sur
     # laquelle on n'a aucune prise. Vingt-trois minutes observees sans reponse,
     # et Apple documente que ca peut depasser l'heure aux moments charges.
     #

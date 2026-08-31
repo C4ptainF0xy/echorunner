@@ -45,20 +45,18 @@ on:
         required: true
         type: string
       notariser:
-        # ═══ SEPAREE DU RESTE, ET PAR DEFAUT ETEINTE ═══
+        # ═══ SEPAREE DU RESTE, ET C'EST CE QUI L'A DEBLOQUEE ═══
         #
-        # La notarisation a bloque trois runs d'affilee: `notarytool submit` est
-        # reste 2 h 52 sans rendre la main, jusqu'a la limite. Ce n'est pas une
-        # file d'attente, c'est autre chose, et on ne l'a pas encore identifie.
+        # La notarisation d'electron-builder a bloque trois runs, jusqu'a
+        # 2 h 52 sans rendre la main. Or `notarytool history` montrait, pendant
+        # ces memes runs, deux soumissions `status: Accepted`: Apple avait
+        # repondu, et c'est `submit --wait` qui ne voyait pas la reponse.
         #
-        # Or l'app signee en arm64, elle, est prete depuis longtemps: neuf
-        # signatures posees en quelques minutes. La retenir en otage d'un
-        # probleme independant n'a aucun sens - sans notarisation, macOS demande
-        # une autorisation a la premiere ouverture, exactement comme
-        # aujourd'hui, et le reste marche.
-        #
-        # On livre donc, et on rallume cette case quand on aura compris.
-        description: "Notariser chez Apple (bloque actuellement, laisser decoche)"
+        # L'etape « Notariser et agrafer » soumet donc sans attendre et
+        # interroge le verdict elle-meme. Elle reste une case a cocher parce
+        # qu'elle ajoute une dizaine de minutes: un build de depannage n'en a
+        # pas besoin, une release oui.
+        description: "Notariser chez Apple (une dizaine de minutes de plus)"
         required: false
         default: false
         type: boolean
@@ -71,23 +69,18 @@ jobs:
     # qui n'existent pas encore, pour aucun gain.
     runs-on: macos-15
 
-    # ═══ UNE LIMITE, CALEE SUR LA FILE D'ATTENTE D'APPLE ═══
+    # ═══ UNE LIMITE, PARCE QU'UN BLOCAGE NE DOIT PAS DURER SIX HEURES ═══
     #
-    # Le veilleur de l'etape de build a tranche le 2026-08-31: la signature
-    # prend une poignee de minutes et se termine (neuf signatures posees), et
-    # ce qui dure, c'est "notarytool submit" -- la file d'attente d'Apple, sur
-    # laquelle on n'a aucune prise. Vingt-trois minutes observees sans reponse,
-    # et Apple documente que ca peut depasser l'heure aux moments charges.
+    # C'est la limite par defaut de GitHub, et trois runs l'ont frolee avant
+    # qu'on comprenne d'ou venait le blocage. Elle ne coute rien en argent -- ce
+    # depot est public, ses minutes sont gratuites -- mais elle coute du temps
+    # de mur, et surtout elle transforme une panne en attente indistinguable
+    # d'un travail en cours.
     #
-    # 180 minutes, donc, et ce n'est plus un probleme de cout: ce depot ne
-    # contient aucun code, il peut rester public, et les minutes Actions y sont
-    # gratuites et illimitees. Sur un depot prive elles se comptent au decuple,
-    # ce qui rendait cette attente impayable.
-    #
-    # Pas plus de 180, et ce n'est pas de la pingrerie: passe trois heures, ce
-    # n'est plus une file d'attente mais une panne, et mieux vaut s'arreter et
-    # regarder que mouliner. Le plafond dur de GitHub est de six heures de
-    # toute facon, timeout-minutes ne depasse pas 360.
+    # 180 minutes couvrent tres largement un build complet, notarisation
+    # comprise: le build seul tient en un quart d'heure, et le verdict d'Apple
+    # arrive generalement en moins de dix minutes. Le plafond dur de GitHub est
+    # de six heures, timeout-minutes ne depasse pas 360.
     timeout-minutes: 180
 
     env:
@@ -389,16 +382,11 @@ jobs:
           # build:mac est une chaine de `&&`, donc les arguments ajoutes
           # atterrissent sur la derniere commande, qui est electron-builder.
           # C'est deja comme ca que `--publish never` fonctionne.
-          if [ "${{ inputs.notariser }}" = "true" ]; then
-            echo "notarisation DEMANDEE. Elle a bloque 2 h 52 au dernier essai:"
-            echo "surveille le veilleur, et coupe si ca depasse la demi-heure."
-            npx yarn build:mac --publish never &
-          else
-            echo "notarisation IGNOREE. L'app sera signee avec ton Developer ID"
-            echo "mais non notarisee: macOS demandera une autorisation a la"
-            echo "premiere ouverture, comme aujourd'hui. Tout le reste marche."
-            npx yarn build:mac --publish never --config.mac.notarize=false &
-          fi
+          # TOUJOURS false ICI, et ce n'est pas un oubli: la notarisation
+          # d'electron-builder appelle `notarytool submit --wait`, qui ne rend
+          # pas la main. Elle est faite plus bas, par une etape qui interroge
+          # le verdict elle-meme.
+          npx yarn build:mac --publish never --config.mac.notarize=false &
           build=$!
 
           (
@@ -434,6 +422,140 @@ jobs:
           else
             echo "app NON SIGNEE (aucun Contents/_CodeSignature)"
           fi
+
+      - name: Notariser et agrafer
+        # ═══ POURQUOI ON NE LAISSE PAS electron-builder LE FAIRE ═══
+        #
+        # Sa notarisation appelle `notarytool submit --wait`, qui est reste
+        # 2 h 52 sans rendre la main, trois fois. Et pourtant `notarytool
+        # history` montrait DEUX soumissions `status: Accepted` faites pendant
+        # ces memes runs: Apple avait repondu, c'est l'attente qui ne voyait
+        # pas la reponse.
+        #
+        # On soumet donc SANS `--wait`, on recupere l'identifiant, et on
+        # interroge le verdict nous-memes. Chaque tour s'affiche, donc une
+        # attente reelle ne ressemble plus jamais a un blocage.
+        #
+        # ═══ ET POURQUOI ON REFAIT LE ZIP ═══
+        #
+        # Agrafer modifie l'application. Le `.zip` produit avant l'agrafage
+        # contient donc une copie SANS ticket, et c'est lui que le lanceur
+        # telecharge pour se mettre a jour. On le refabrique depuis
+        # l'application agrafee, ce qui change sa taille et son empreinte, donc
+        # `latest-mac.yml` doit etre corrige et resigne. Sauter cette partie
+        # donnerait un manifeste qui decrit un fichier qui n'existe plus, et
+        # electron-updater refuserait la mise a jour.
+        if: inputs.notariser
+        run: |
+          set -eu
+
+          app=$(find dist -maxdepth 2 -name "*.app" -type d | head -1)
+          dmg=$(find dist -maxdepth 1 -name "*.dmg" | head -1)
+          zip=$(find dist -maxdepth 1 -name "*-mac.zip" | head -1)
+          for f in "$app" "$dmg" "$zip"; do
+            [ -e "$f" ] || { echo "introuvable : $f"; exit 1; }
+          done
+          echo "app : $app"
+          echo "dmg : $dmg"
+          echo "zip : $zip"
+
+          identifiants="--key $APPLE_API_KEY --key-id $APPLE_API_KEY_ID --issuer $APPLE_API_ISSUER"
+
+          # ---- 1. Soumettre, sans attendre -----------------------------------
+          echo "--- soumission ---"
+          # shellcheck disable=SC2086
+          reponse=$(xcrun notarytool submit "$dmg" $identifiants --output-format json)
+          soumission=$(printf '%s' "$reponse" | node -e '
+            let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
+              try { process.stdout.write(String(JSON.parse(s).id ?? "")); } catch { }
+            });')
+          if [ -z "$soumission" ]; then
+            echo "aucun identifiant de soumission dans la reponse :"
+            printf '%s\n' "$reponse" | head -20
+            exit 1
+          fi
+          echo "soumission : $soumission"
+
+          # ---- 2. Attendre le verdict, en le disant --------------------------
+          #
+          # Trente tours d'une minute. Apple rend generalement son verdict en
+          # moins d'un quart d'heure; au-dela, mieux vaut s'arreter avec
+          # l'identifiant en main - la soumission continue de vivre chez Apple
+          # et se rattrape a la main avec `notarytool info`.
+          statut=""
+          tour=0
+          while [ "$tour" -lt 30 ]; do
+            tour=$((tour + 1))
+            sleep 60
+            # shellcheck disable=SC2086
+            info=$(xcrun notarytool info "$soumission" $identifiants --output-format json 2>&1 || true)
+            statut=$(printf '%s' "$info" | node -e '
+              let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
+                try { process.stdout.write(String(JSON.parse(s).status ?? "")); } catch { }
+              });')
+            echo "  tour $tour : ${statut:-(pas de statut lisible)}"
+            case "$statut" in
+              Accepted | Invalid | Rejected) break ;;
+            esac
+          done
+
+          if [ "$statut" != "Accepted" ]; then
+            echo "verdict : ${statut:-inconnu}"
+            echo "--- ce qu'Apple reproche ---"
+            # shellcheck disable=SC2086
+            xcrun notarytool log "$soumission" $identifiants 2>&1 | head -60 || true
+            exit 1
+          fi
+          echo "notarisation acceptee."
+
+          # ---- 3. Agrafer ----------------------------------------------------
+          #
+          # Le dmg et l'application separement: le ticket vaut pour l'empreinte
+          # du code, et la notarisation d'un dmg enregistre aussi ce qu'il
+          # contient. Agrafer les deux couvre les deux chemins de distribution,
+          # le telechargement direct et la mise a jour automatique.
+          echo "--- agrafage ---"
+          xcrun stapler staple "$dmg"
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
+
+          # ---- 4. Refaire le zip depuis l'application agrafee -----------------
+          #
+          # ditto avec --sequesterRsrc et --keepParent: c'est la forme
+          # qu'electron-builder produit et qu'electron-updater sait relire.
+          echo "--- reconstruction du zip ---"
+          rm -f "$zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"
+          ls -lh "$zip"
+
+          # ---- 5. Corriger le manifeste --------------------------------------
+          taille=$(stat -f%z "$zip")
+          empreinte=$(openssl dgst -sha512 -binary "$zip" | openssl base64 -A)
+          NOM=$(basename "$zip") TAILLE="$taille" EMPREINTE="$empreinte" node -e '
+            const fs = require("fs");
+            const chemin = "dist/latest-mac.yml";
+            let t = fs.readFileSync(chemin, "utf8");
+            const avant = t;
+            // Remplacement cible: seules la taille et l empreinte du zip
+            // changent, et le reste du manifeste doit rester intact.
+            t = t.replace(/sha512: \S+/g, "sha512: " + process.env.EMPREINTE);
+            t = t.replace(/size: \d+/g, "size: " + process.env.TAILLE);
+            if (t === avant) {
+              console.error("manifeste inchange: motif introuvable");
+              process.exit(1);
+            }
+            fs.writeFileSync(chemin, t, "utf8");
+            console.log("manifeste corrige pour " + process.env.NOM);
+          '
+          cat dist/latest-mac.yml
+
+          # ---- 6. Resigner le manifeste --------------------------------------
+          if [ -n "${ECHO_UPDATE_SIGNING_KEY:-}" ]; then
+            node scripts/signer-manifeste.mjs dist/latest-mac.yml
+          fi
+
+          echo "--- verdict final ---"
+          spctl -a -vv "$app" 2>&1 | head -4 || true
 
       - name: Le paquet est-il vraiment ARM64
         # LA SECONDE GARDE, ET LA PLUS IMPORTANTE. Un build qui retombe en x64

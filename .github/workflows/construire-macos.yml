@@ -52,11 +52,16 @@ jobs:
     # laquelle on n'a aucune prise. Vingt-trois minutes observees sans reponse,
     # et Apple documente que ca peut depasser l'heure aux moments charges.
     #
-    # 90 minutes, donc, et ce n'est plus un probleme de cout: ce depot ne
+    # 180 minutes, donc, et ce n'est plus un probleme de cout: ce depot ne
     # contient aucun code, il peut rester public, et les minutes Actions y sont
     # gratuites et illimitees. Sur un depot prive elles se comptent au decuple,
     # ce qui rendait cette attente impayable.
-    timeout-minutes: 90
+    #
+    # Pas plus de 180, et ce n'est pas de la pingrerie: passe trois heures, ce
+    # n'est plus une file d'attente mais une panne, et mieux vaut s'arreter et
+    # regarder que mouliner. Le plafond dur de GitHub est de six heures de
+    # toute facon, timeout-minutes ne depasse pas 360.
+    timeout-minutes: 180
 
     env:
       # ═══ POURQUOI CES NOMS-LA, ET PAS GITHUB_SERVER_URL ═══

@@ -52,7 +52,8 @@ jobs:
     # que le quota entier. Constate le 2026-08-30, une signature restee 81
     # minutes sans avancer, donc 810 minutes decomptees.
     #
-    # 45 minutes couvrent largement un build complet, notarisation comprise.
+    # 30 minutes suffisent: avec le veilleur de l'etape de build, un blocage
+    # se voit en trois minutes, et un build sain tient largement dedans.
     timeout-minutes: 30
 
     env:

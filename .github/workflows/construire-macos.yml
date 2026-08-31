@@ -53,7 +53,7 @@ jobs:
     # minutes sans avancer, donc 810 minutes decomptees.
     #
     # 45 minutes couvrent largement un build complet, notarisation comprise.
-    timeout-minutes: 45
+    timeout-minutes: 30
 
     env:
       # ═══ POURQUOI CES NOMS-LA, ET PAS GITHUB_SERVER_URL ═══
@@ -315,7 +315,45 @@ jobs:
         # toujours une boite de dialogue que personne ne voit.
         env:
           DEBUG: electron-builder
-        run: npx yarn build:mac --publish never
+        run: |
+          set -u
+
+          # ═══ UN VEILLEUR, PARCE QUE LE SILENCE NE DIT RIEN ═══
+          #
+          # electron-builder n'ecrit rien entre « signing » et la fin de la
+          # signature. Deux situations tres differentes se ressemblent donc
+          # exactement: une signature qui avance lentement sur des centaines de
+          # binaires, et une signature bloquee sur le premier. On a perdu deux
+          # runs entiers a ne pas pouvoir les distinguer.
+          #
+          # Ce veilleur echantillonne toutes les vingt secondes QUEL fichier
+          # codesign est en train de traiter, depuis combien de temps, et
+          # combien de signatures sont deja posees. Si le compteur monte, ca
+          # travaille; s'il reste a zero avec le meme fichier depuis cinq
+          # minutes, c'est bloque, et on saura sur quoi.
+          npx yarn build:mac --publish never &
+          build=$!
+
+          (
+            while kill -0 "$build" 2>/dev/null; do
+              sleep 20
+              echo "···· veilleur $(date +%H:%M:%S) ····"
+              enCours=$(ps -Ao etime,command | grep -E "[c]odesign|[n]otarytool|[x]crun" | head -3 || true)
+              if [ -n "$enCours" ]; then
+                printf '%s\n' "$enCours" | cut -c1-200 | sed 's/^/  /'
+              else
+                echo "  aucun codesign en cours"
+              fi
+              posees=$(find dist -name "_CodeSignature" -type d 2>/dev/null | wc -l | tr -d ' ')
+              echo "  signatures posees : $posees"
+            done
+          ) &
+          veilleur=$!
+
+          statut=0
+          wait "$build" || statut=$?
+          kill "$veilleur" 2>/dev/null || true
+          exit "$statut"
 
       - name: Ce que la signature donne
         # Verifie ce qui EST, pas ce qui etait demande. Une signature annoncee

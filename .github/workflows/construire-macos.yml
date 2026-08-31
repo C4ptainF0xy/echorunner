@@ -16,10 +16,19 @@ name: Construire Echo pour macOS Apple Silicon
 # runner ephemere. Un depot GitHub public rendrait la source et tout
 # l'historique clonables par n'importe qui, ce que le projet refuse.
 #
-# CE DEPOT DOIT DONC RESTER PRIVE. Sur un depot prive, GitHub facture les
-# minutes macOS au decuple: les 2000 minutes offertes valent environ 200 minutes
-# macOS reelles, soit une poignee de builds par mois. C'est assez pour des
-# releases, pas pour de l'integration continue.
+# CE DEPOT EST PUBLIC, ET C'EST PRECISEMENT PARCE QU'IL EST VIDE. Sur un depot
+# prive, GitHub facture les minutes macOS au DECUPLE: les 2000 offertes valent
+# environ 200 minutes macOS reelles, et une seule notarisation lente les mange.
+# Public, elles sont gratuites et illimitees.
+#
+# Ce que cela expose, et qu'il faut assumer: les JOURNAUX deviennent lisibles
+# par tous. Ils listent l'arbre des dependances du launcher et des chemins de
+# fichiers -- pas une ligne de code, mais sa structure. Les secrets, eux, ne
+# risquent rien: GitHub ne les passe jamais a un workflow declenche depuis un
+# fork, et workflow_dispatch exige un droit d'ecriture.
+#
+# LA REGLE QUI RESTE, ELLE, ABSOLUE: aucun code du launcher ne doit etre
+# COMMITE ici. Il est clone au moment du build et disparait avec le runner.
 #
 # CE QUI A RENDU CECI POSSIBLE. `python_rpc` est fige par cx_Freeze, qui ne sait
 # pas compiler pour une autre architecture que la sienne. On croyait donc devoir

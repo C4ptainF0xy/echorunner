@@ -529,24 +529,73 @@ jobs:
           ls -lh "$zip"
 
           # ---- 5. Corriger le manifeste --------------------------------------
-          taille=$(stat -f%z "$zip")
-          empreinte=$(openssl dgst -sha512 -binary "$zip" | openssl base64 -A)
-          NOM=$(basename "$zip") TAILLE="$taille" EMPREINTE="$empreinte" node -e '
-            const fs = require("fs");
-            const chemin = "dist/latest-mac.yml";
-            let t = fs.readFileSync(chemin, "utf8");
-            const avant = t;
-            // Remplacement cible: seules la taille et l empreinte du zip
-            // changent, et le reste du manifeste doit rester intact.
-            t = t.replace(/sha512: \S+/g, "sha512: " + process.env.EMPREINTE);
-            t = t.replace(/size: \d+/g, "size: " + process.env.TAILLE);
-            if (t === avant) {
-              console.error("manifeste inchange: motif introuvable");
-              process.exit(1);
-            }
-            fs.writeFileSync(chemin, t, "utf8");
-            console.log("manifeste corrige pour " + process.env.NOM);
-          '
+          #
+          # CHAQUE FICHIER A SA PROPRE EMPREINTE, et les deux ont change:
+          # le zip parce qu'on vient de le refaire depuis l'application
+          # agrafee, le dmg parce que l'agrafage l'a modifie lui aussi.
+          #
+          # La premiere version de cette etape remplacait `sha512:` et `size:`
+          # avec le drapeau global, donc elle ecrasait AUSSI la ligne du dmg
+          # avec les valeurs du zip. Le manifeste restait valide, et annoncait
+          # simplement un fichier qui n'existe pas: 263075119 octets pour un dmg
+          # qui en fait 262 millions. Constate le 2026-08-31 sur le premier
+          # manifeste notarise.
+          #
+          # On repasse donc entree par entree, en s'ancrant sur le nom du
+          # fichier, et on relit l'empreinte sur le disque plutot que de la
+          # recopier d'ailleurs.
+          for f in "$zip" "$dmg"; do
+            nom=$(basename "$f")
+            NOM="$nom" \
+            TAILLE="$(stat -f%z "$f")" \
+            EMPREINTE="$(openssl dgst -sha512 -binary "$f" | openssl base64 -A)" \
+            node -e '
+              const fs = require("fs");
+              const chemin = "dist/latest-mac.yml";
+              const nom = process.env.NOM;
+              const lignes = fs.readFileSync(chemin, "utf8").split("\n");
+
+              // Une entree est « - url: <nom> » suivie de sa sha512 et de sa
+              // size. On ne touche qu aux lignes qui suivent CETTE url, et on
+              // s arrete a l entree suivante.
+              let dansLEntree = false;
+              let touche = 0;
+              for (let i = 0; i < lignes.length; i++) {
+                const l = lignes[i];
+                if (/^\s*-\s+url:\s*/.test(l)) {
+                  dansLEntree = l.trim().endsWith(nom);
+                  continue;
+                }
+                if (!dansLEntree) continue;
+                if (/^\S/.test(l)) { dansLEntree = false; continue; }
+                if (/^\s*sha512:/.test(l)) {
+                  lignes[i] = l.replace(/sha512:.*/, "sha512: " + process.env.EMPREINTE);
+                  touche++;
+                } else if (/^\s*size:/.test(l)) {
+                  lignes[i] = l.replace(/size:.*/, "size: " + process.env.TAILLE);
+                  touche++;
+                }
+              }
+
+              // Les champs de tete decrivent le fichier de mise a jour, donc le
+              // zip: on ne les corrige que pour lui.
+              if (lignes.some((l) => l.startsWith("path: " + nom))) {
+                for (let i = 0; i < lignes.length; i++) {
+                  if (/^sha512:/.test(lignes[i])) {
+                    lignes[i] = "sha512: " + process.env.EMPREINTE;
+                    touche++;
+                  }
+                }
+              }
+
+              if (touche === 0) {
+                console.error("aucune ligne corrigee pour " + nom);
+                process.exit(1);
+              }
+              fs.writeFileSync(chemin, lignes.join("\n"), "utf8");
+              console.log("  " + nom + " : " + touche + " ligne(s) corrigee(s)");
+            '
+          done
           cat dist/latest-mac.yml
 
           # ---- 6. Resigner le manifeste --------------------------------------

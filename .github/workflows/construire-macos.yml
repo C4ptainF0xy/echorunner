@@ -44,6 +44,24 @@ on:
         description: "Le tag a construire, avec le v (ex: v0.7.46)"
         required: true
         type: string
+      notariser:
+        # ═══ SEPAREE DU RESTE, ET PAR DEFAUT ETEINTE ═══
+        #
+        # La notarisation a bloque trois runs d'affilee: `notarytool submit` est
+        # reste 2 h 52 sans rendre la main, jusqu'a la limite. Ce n'est pas une
+        # file d'attente, c'est autre chose, et on ne l'a pas encore identifie.
+        #
+        # Or l'app signee en arm64, elle, est prete depuis longtemps: neuf
+        # signatures posees en quelques minutes. La retenir en otage d'un
+        # probleme independant n'a aucun sens - sans notarisation, macOS demande
+        # une autorisation a la premiere ouverture, exactement comme
+        # aujourd'hui, et le reste marche.
+        #
+        # On livre donc, et on rallume cette case quand on aura compris.
+        description: "Notariser chez Apple (bloque actuellement, laisser decoche)"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   macos:
@@ -318,7 +336,26 @@ jobs:
             || { echo "le .p8 decode n'est pas une cle privee : base64 invalide ?"; exit 1; }
           echo "APPLE_API_KEY=$cle" >> "$GITHUB_ENV"
 
-          echo "trousseau pret, signature et notarisation demandees."
+          # ═══ LA CLE PARLE-T-ELLE A APPLE, OUI OU NON ═══
+          #
+          # `notarytool history` fait le meme aller-retour authentifie qu'une
+          # soumission, mais sans televerser 250 Mo et sans attendre de verdict:
+          # il repond en quelques secondes ou il ne repond pas. C'est donc le
+          # moyen le moins cher de savoir si l'identifiant, l'emetteur et la cle
+          # forment un jeu valide.
+          #
+          # Ne fait PAS echouer le job: on veut l'information, pas un blocage de
+          # plus. Trente secondes suffisent a trancher.
+          echo "--- la cle de notarisation repond-elle ---"
+          if xcrun notarytool history --key "$cle" \
+               --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" \
+               2>&1 | head -12; then
+            echo "(reponse obtenue)"
+          else
+            echo "(pas de reponse exploitable, voir ci-dessus)"
+          fi
+
+          echo "trousseau pret."
 
       - name: Build macOS
         # DEBUG=electron-builder affiche chaque appel a codesign, un par un.
@@ -348,7 +385,20 @@ jobs:
           # combien de signatures sont deja posees. Si le compteur monte, ca
           # travaille; s'il reste a zero avec le meme fichier depuis cinq
           # minutes, c'est bloque, et on saura sur quoi.
-          npx yarn build:mac --publish never &
+          # `--config.mac.notarize=false` va bien a electron-builder: le script
+          # build:mac est une chaine de `&&`, donc les arguments ajoutes
+          # atterrissent sur la derniere commande, qui est electron-builder.
+          # C'est deja comme ca que `--publish never` fonctionne.
+          if [ "${{ inputs.notariser }}" = "true" ]; then
+            echo "notarisation DEMANDEE. Elle a bloque 2 h 52 au dernier essai:"
+            echo "surveille le veilleur, et coupe si ca depasse la demi-heure."
+            npx yarn build:mac --publish never &
+          else
+            echo "notarisation IGNOREE. L'app sera signee avec ton Developer ID"
+            echo "mais non notarisee: macOS demandera une autorisation a la"
+            echo "premiere ouverture, comme aujourd'hui. Tout le reste marche."
+            npx yarn build:mac --publish never --config.mac.notarize=false &
+          fi
           build=$!
 
           (

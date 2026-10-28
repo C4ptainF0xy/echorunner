@@ -514,10 +514,27 @@ jobs:
           # du code, et la notarisation d'un dmg enregistre aussi ce qu'il
           # contient. Agrafer les deux couvre les deux chemins de distribution,
           # le telechargement direct et la mise a jour automatique.
+          #
+          # Cinq essais, trente secondes d'ecart. Le 2026-10-28, la 0.7.52 a
+          # echoue deux fois de suite ici, notarisation pourtant acceptee:
+          # « The network connection was lost » (-1005) en pleine requete vers
+          # api.apple-cloudkit.com, sur deux serveurs Apple differents, sans
+          # incident annonce par Apple. Une heure plus tot la 0.7.51 passait en
+          # une demi-seconde. Redemander un ticket deja delivre est sans effet
+          # de bord: on peut reessayer autant qu'on veut.
+          agrafer() {
+            essai=1
+            until xcrun stapler "$@"; do
+              [ "$essai" -ge 5 ] && return 1
+              echo "  essai $essai rate, nouvel essai dans 30 s"
+              essai=$((essai + 1))
+              sleep 30
+            done
+          }
           echo "--- agrafage ---"
-          xcrun stapler staple "$dmg"
-          xcrun stapler staple "$app"
-          xcrun stapler validate "$app"
+          agrafer staple "$dmg"
+          agrafer staple "$app"
+          agrafer validate "$app"
 
           # ---- 4. Refaire le zip depuis l'application agrafee -----------------
           #
